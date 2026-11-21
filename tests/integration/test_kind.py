@@ -102,6 +102,43 @@ def test_m2_ten_mixed_jobs_bound_by_our_scheduler(kube, ns):
     assert len(order) == 10 and order == sorted(order, reverse=True)
 
 
+def _agent_actions(v1, node):
+    pod = next(p for p in v1.list_namespaced_pod(NS, label_selector="app=gpu-agent").items if p.spec.node_name == node)
+    r = v1.connect_get_namespaced_pod_proxy_with_path(f"{pod.metadata.name}:9400", NS, "actions", _preload_content=False)
+    return json.loads(r.data.decode())
+
+
+def test_m3_throttle_on_saturated_gpu_then_unthrottle(kube, ns):
+    """Compute (not memory/slots) is the problem -> freeze co-located batch pods; unfreeze when critical ends."""
+    batch, v1 = kube.BatchV1Api(), kube.CoreV1Api()
+    node = "gpuorch-worker3"
+
+    def pinned(m):
+        m["spec"]["template"]["spec"]["nodeSelector"] = {"kubernetes.io/hostname": node}
+        return m
+
+    for i in range(3):
+        batch.create_namespaced_job(ns, pinned(fake_job(f"t-{i}", "gpu-batch", mem=1000, util=35, ns=ns)))
+    wait(lambda: sum(p.status.phase == "Running" for p in v1.list_namespaced_pod(ns).items) == 3, 120)
+    batch.create_namespaced_job(ns, pinned(fake_job("tcrit", "gpu-critical", mem=1000, util=30, duration=40, ns=ns)))
+
+    def throttled():
+        return [e for e in v1.list_namespaced_event(ns).items
+                if e.reason == "GpuPreempted" and e.message.startswith("throttle")]
+
+    wait(lambda: throttled(), 60)
+    frozen_uids = {a["pod_uid"] for a in _agent_actions(v1, node) if a["action"] == "freeze"}
+    ns_uids = {p.metadata.uid for p in v1.list_namespaced_pod(ns).items}
+    assert frozen_uids & ns_uids, "agent on the node recorded no freeze for our pods"
+    assert not any(e.reason == "GpuPreempted" and e.message.startswith("evict")
+                   for e in v1.list_namespaced_event(ns).items)  # compute problem -> no eviction
+
+    # critical job ends after ~40s -> controller unfreezes (reason triggers_finished)
+    wait(lambda: any(e.reason == "GpuUnthrottled" for e in v1.list_namespaced_event(ns).items), 120, 2)
+    unfrozen = {a["pod_uid"] for a in _agent_actions(v1, node) if a["action"] == "unfreeze"}
+    assert (frozen_uids & ns_uids) <= unfrozen
+
+
 def test_m3_critical_preempts_full_cluster_of_batch(kube, ns):
     batch, v1 = kube.BatchV1Api(), kube.CoreV1Api()
     for i in range(12):
