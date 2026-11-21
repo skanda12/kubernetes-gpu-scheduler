@@ -51,12 +51,12 @@ def wait(pred, timeout=120, interval=1.0):
     raise AssertionError("timeout")
 
 
-def fake_job(name, pclass, mem=2000, util=30, duration=600, ours=True):
+def fake_job(name, pclass, mem=2000, util=30, duration=600, ours=True, ns="default"):
     from gpuorch.experiments.runner import job_manifest
 
     job = {"name": name, "type": "batch", "priority_class": pclass, "duration_s": duration, "gpu_mem_mb": mem,
            "gpu_util": util, "checkpoint_every_s": 5}
-    m = job_manifest(job, "gpuorch" if ours else "default", "x", "gpuorch/fake-workload:dev", 1.0, "it")
+    m = job_manifest(job, "gpuorch" if ours else "default", ns, "gpuorch/fake-workload:dev", 1.0, "it")
     m["spec"]["template"]["spec"]["tolerations"] = []
     return m
 
@@ -88,19 +88,27 @@ def test_m2_ten_mixed_jobs_bound_by_our_scheduler(kube, ns):
     batch, v1 = kube.BatchV1Api(), kube.CoreV1Api()
     classes = ["gpu-batch", "gpu-normal", "gpu-critical", "gpu-high"] * 3
     for i, pc in enumerate(classes[:10]):
-        batch.create_namespaced_job(ns, fake_job(f"mix-{i}", pc, mem=1000, duration=120))
+        batch.create_namespaced_job(ns, fake_job(f"mix-{i}", pc, mem=1000, duration=120, ns=ns))
     wait(lambda: len([p for p in v1.list_namespaced_pod(ns).items if p.spec.node_name]) == 10, 90)
     events = [e for e in v1.list_namespaced_event(ns).items if e.reason == "GpuScheduled"]
     assert len(events) >= 10 and all("scores=" in e.message for e in events)
+    # bind order (from the scheduler's structured decision log) must be highest priority first
+    sched_pod = v1.list_namespaced_pod(NS, label_selector="app=gpu-scheduler").items[0].metadata.name
+    order = []
+    for line in v1.read_namespaced_pod_log(sched_pod, NS, tail_lines=500).splitlines():
+        rec = json.loads(line) if line.startswith("{") else {}
+        if rec.get("event") == "pod_scheduled" and rec["pod"].startswith(f"{ns}/"):
+            order.append(rec["priority"])
+    assert len(order) == 10 and order == sorted(order, reverse=True)
 
 
 def test_m3_critical_preempts_full_cluster_of_batch(kube, ns):
     batch, v1 = kube.BatchV1Api(), kube.CoreV1Api()
     for i in range(12):
-        batch.create_namespaced_job(ns, fake_job(f"b-{i}", "gpu-batch", mem=3000))
+        batch.create_namespaced_job(ns, fake_job(f"b-{i}", "gpu-batch", mem=3000, ns=ns))
     wait(lambda: sum(p.status.phase == "Running" for p in v1.list_namespaced_pod(ns).items) == 12, 180)
     time.sleep(8)  # let them checkpoint
-    batch.create_namespaced_job(ns, fake_job("crit", "gpu-critical", mem=2000, duration=30))
+    batch.create_namespaced_job(ns, fake_job("crit", "gpu-critical", mem=2000, duration=30, ns=ns))
 
     def crit_running():
         return any(p.status.phase == "Running" for p in v1.list_namespaced_pod(ns, label_selector="gpuorch.io/job=crit").items)
