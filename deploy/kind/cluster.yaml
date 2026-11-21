@@ -1,0 +1,17 @@
+# kind cluster: 1 control-plane + 3 workers with simulated GPUs.
+# `python -m gpuorch.tools.cluster up` renders ${CKPT_HOST_DIR} to an absolute path (shared checkpoint dir, so an
+# evicted training pod can resume on a different worker) and patches workers with fake nvidia.com/gpu capacity.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: gpuorch
+nodes:
+  - role: control-plane
+  - role: worker
+    labels: {gpuorch.io/gpu-node: "true"}
+    extraMounts: [{hostPath: "${CKPT_HOST_DIR}", containerPath: /ckpt}]
+  - role: worker
+    labels: {gpuorch.io/gpu-node: "true"}
+    extraMounts: [{hostPath: "${CKPT_HOST_DIR}", containerPath: /ckpt}]
+  - role: worker
+    labels: {gpuorch.io/gpu-node: "true"}
+    extraMounts: [{hostPath: "${CKPT_HOST_DIR}", containerPath: /ckpt}]

@@ -1,0 +1,40 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11", cache: pip}
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests scripts workloads
+      - run: pytest -q --cov=gpuorch --cov-report=term --cov-fail-under=70
+      - run: python -m gpuorch.tools.demo --offline
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with: {version: v3.15.2}
+      - run: helm lint deploy/helm/gpuorch
+      - run: helm template gpuorch deploy/helm/gpuorch --set agent.real.enabled=true > /dev/null
+
+  # Optional end-to-end on kind (slower); runs on main only.
+  kind-e2e:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: azure/setup-helm@v4
+      - uses: helm/kind-action@v1
+        with: {install_only: true}
+      - run: pip install -e ".[dev]"
+      - run: python -m gpuorch.tools.cluster up && python -m gpuorch.tools.cluster images && python -m gpuorch.tools.cluster deploy
+      - run: pytest -q -m integration
