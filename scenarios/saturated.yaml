@@ -1,0 +1,9 @@
+# Background load ramps the GPU to saturation -> exercises the throttle path of the preemption controller.
+nodes:
+  default:
+    gpus:
+      - name: "Tesla T4 (mock, busy)"
+        memory_mb: 16384
+        base_mem_mb: 300
+        util_curve: [[0, 20], [60, 60], [120, 20]]
+        loop_s: 120

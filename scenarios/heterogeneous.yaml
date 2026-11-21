@@ -1,0 +1,17 @@
+# Different GPUs per node (node names from deploy/kind/cluster.yaml).
+nodes:
+  gpuorch-worker:
+    gpus:
+      - {name: "Tesla T4 (mock)", memory_mb: 16384, base_mem_mb: 300, util_curve: [[0, 5]]}
+  gpuorch-worker2:
+    gpus:
+      - {name: "RTX 3060 Laptop (mock)", memory_mb: 6144, base_mem_mb: 400, util_curve: [[0, 10], [120, 40], [240, 10]], loop_s: 240}
+  gpuorch-worker3:
+    gpus:
+      - {name: "RTX 4060 Laptop (mock)", memory_mb: 8192, base_mem_mb: 400, util_curve: [[0, 0]]}
+  default:
+    gpus:
+      - {name: "Mock GPU", memory_mb: 16384}
+# Fake usage for pods that do not self-report (matched by pod name)
+pods:
+  legacy-trainer-0: {gpu_mem_mb: 5000, gpu_util: 70}

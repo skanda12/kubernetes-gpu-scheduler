@@ -1,0 +1,10 @@
+# Mock GPU scenario for the kind cluster: every worker = 1x 16 GiB "T4", exposed as 4 time-sliced slots.
+# Device utilisation = small background curve + whatever the pods on it self-report (non-frozen only).
+nodes:
+  default:
+    gpus:
+      - name: "Tesla T4 (mock)"
+        memory_mb: 16384
+        base_mem_mb: 300
+        util_curve: [[0, 2], [30, 5], [60, 2]]
+        loop_s: 60
