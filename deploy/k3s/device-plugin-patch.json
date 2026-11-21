@@ -1,0 +1,25 @@
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "runtimeClassName": "nvidia",
+        "nodeSelector": {"gpuorch.io/real-gpu": "true"},
+        "containers": [
+          {
+            "name": "nvidia-device-plugin-ctr",
+            "args": ["--config-file=/etc/nvidia-device-plugin/config.yaml"],
+            "env": [{"name": "FAIL_ON_INIT_ERROR", "value": "false"}],
+            "volumeMounts": [
+              {"name": "device-plugin", "mountPath": "/var/lib/kubelet/device-plugins"},
+              {"name": "dp-config", "mountPath": "/etc/nvidia-device-plugin"}
+            ]
+          }
+        ],
+        "volumes": [
+          {"name": "device-plugin", "hostPath": {"path": "/var/lib/kubelet/device-plugins"}},
+          {"name": "dp-config", "configMap": {"name": "nvidia-device-plugin-config"}}
+        ]
+      }
+    }
+  }
+}

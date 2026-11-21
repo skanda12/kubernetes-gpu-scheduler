@@ -1,0 +1,19 @@
+# Time-slicing: each physical GPU is advertised as 4 nvidia.com/gpu so several pods share it (MPS/MIG are not
+# available on WSL2 laptop GPUs). Pods get no memory isolation - gpuorch's memory-aware filter covers that.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nvidia-device-plugin-config
+  namespace: kube-system
+data:
+  config.yaml: |
+    version: v1
+    flags:
+      migStrategy: none
+    sharing:
+      timeSlicing:
+        renameByDefault: false
+        failRequestsGreaterThanOne: true
+        resources:
+          - name: nvidia.com/gpu
+            replicas: 4

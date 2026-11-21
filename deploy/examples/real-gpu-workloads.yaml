@@ -1,0 +1,88 @@
+# Real-GPU workloads for M5/M6 (WSL2 nodes). `kubectl apply -f deploy/examples/real-gpu-workloads.yaml`
+# Batch training (low priority) + critical ResNet-50 inference + its load generator.
+# TODO(verify-on-gpu): after applying, the critical pod should start within ~10s even when both GPUs are full,
+# and `kubectl get events --field-selector reason=GpuPreempted` shows the chosen victims.
+# Checkpoints use a hostPath per laptop; an evicted job resuming on the *other* laptop starts from step 0 unless
+# /var/lib/gpuorch/ckpt is synced (e.g. an NFS export from the dev laptop).
+apiVersion: batch/v1
+kind: Job
+metadata: {name: train-batch-a}
+spec:
+  backoffLimit: 20
+  template:
+    metadata:
+      labels: {gpuorch.io/job: train-batch-a, gpuorch.io/priority: gpu-batch}
+      annotations:
+        gpuorch.io/gpu-mem-mb: "3500"
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+    spec:
+      schedulerName: priority-gpu-scheduler
+      priorityClassName: gpu-batch
+      runtimeClassName: nvidia
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: train
+          image: gpuorch/training:dev
+          env:
+            - {name: TOTAL_STEPS, value: "5000"}
+            - {name: CHECKPOINT_EVERY_STEPS, value: "100"}
+            - {name: CHECKPOINT_DIR, value: /ckpt/train-batch-a}
+            - {name: BATCH, value: "32"}
+          resources: {limits: {nvidia.com/gpu: 1}}
+          volumeMounts: [{name: ckpt, mountPath: /ckpt}]
+      volumes: [{name: ckpt, hostPath: {path: /var/lib/gpuorch/ckpt, type: DirectoryOrCreate}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: resnet-critical}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: resnet-critical}}
+  template:
+    metadata:
+      labels: {app: resnet-critical, gpuorch.io/job: resnet-critical, gpuorch.io/priority: gpu-critical}
+      annotations:
+        gpuorch.io/gpu-mem-mb: "1500"
+        gpuorch.io/latency-slo-ms: "50"
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+    spec:
+      schedulerName: priority-gpu-scheduler
+      priorityClassName: gpu-critical
+      runtimeClassName: nvidia
+      containers:
+        - name: server
+          image: gpuorch/inference:dev
+          env: [{name: MODEL, value: resnet50}, {name: JOB_NAME, value: resnet-critical}]
+          ports: [{containerPort: 8000}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8000}, periodSeconds: 2}
+          resources: {limits: {nvidia.com/gpu: 1}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: resnet-critical}
+spec:
+  selector: {app: resnet-critical}
+  ports: [{port: 8000, targetPort: 8000}]
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: loadgen-resnet-critical}
+spec:
+  template:
+    metadata:
+      annotations: {prometheus.io/scrape: "true", prometheus.io/port: "8001"}
+    spec:
+      restartPolicy: Never
+      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      containers:
+        - name: loadgen
+          image: gpuorch/load-generator:dev
+          env:
+            - {name: TARGET_URL, value: "http://resnet-critical:8000/predict"}
+            - {name: TARGET_NAME, value: resnet-critical}
+            - {name: RPS, value: "20"}
+            - {name: DURATION_S, value: "300"}
+            - {name: SLO_MS, value: "50"}

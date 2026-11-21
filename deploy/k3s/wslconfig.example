@@ -1,0 +1,11 @@
+# Copy to %UserProfile%\.wslconfig on each Windows laptop, then run `wsl --shutdown` in PowerShell.
+[wsl2]
+networkingMode=mirrored        # Windows 11 22H2+: WSL2 shares the Windows LAN IP (option 1)
+dnsTunneling=true
+firewall=true
+autoProxy=true
+memory=12GB                    # leave some RAM for Windows
+kernelCommandLine=cgroup_no_v1=all   # force a pure cgroup v2 hierarchy
+
+[experimental]
+hostAddressLoopback=true

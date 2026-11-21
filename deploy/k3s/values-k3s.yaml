@@ -1,0 +1,19 @@
+# Helm overrides for the real WSL2 cluster (M5/M6).
+# Images must be available to every node: push to a registry (e.g. ghcr.io/<team>/gpuorch) or
+# `docker save gpuorch/gpuorch:dev | sudo k3s ctr images import -` on each laptop.
+image:
+  repository: gpuorch/gpuorch
+  tag: dev
+  gpuTag: dev-gpu
+agent:
+  real:
+    enabled: true          # nvml backend + cgroup enforcer on nodes labelled gpuorch.io/real-gpu=true
+  mock:
+    # mock agents only on simulated (non-real) GPU nodes, e.g. the single-real-node fallback
+    nodeSelector: {gpuorch.io/gpu-node: "true"}
+autoscalerSim:
+  enabled: true             # adds KWOK nodes for burst capacity; set false for pure real-GPU runs
+prometheus:
+  enabled: true
+grafana:
+  enabled: true
