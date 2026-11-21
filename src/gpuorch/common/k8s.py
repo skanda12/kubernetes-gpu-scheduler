@@ -198,11 +198,7 @@ class KubeCluster:
 
     def patch_node_gpu_capacity(self, node_name: str, gpus: int) -> None:
         """Advertise fake nvidia.com/gpu capacity (extended resource via status patch)."""
-        body = [{"op": "add", "path": "/status/capacity/nvidia.com~1gpu", "value": str(gpus)}]
-        self.v1.api_client.call_api(
-            f"/api/v1/nodes/{node_name}/status", "PATCH", body=body,
-            header_params={"Content-Type": "application/json-patch+json"}, auth_settings=["BearerToken"],
-        )
+        self.v1.patch_node_status(node_name, {"status": {"capacity": {C.GPU_RESOURCE: str(gpus)}}})
 
 
 def _node_resources(node: NodeInfo) -> dict[str, str]:
