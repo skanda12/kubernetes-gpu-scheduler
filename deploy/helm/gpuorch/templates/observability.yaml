@@ -44,7 +44,7 @@ spec:
       annotations: {checksum/config: {{ .Values.prometheus | toYaml | sha256sum }}}
     spec:
       serviceAccountName: prometheus
-      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      {{- include "gpuorch.controlPlaneAffinity" . | nindent 6 }}
       containers:
         - name: prometheus
           image: {{ $pr.image }}
@@ -93,7 +93,7 @@ spec:
   template:
     metadata: {labels: {app: grafana}}
     spec:
-      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      {{- include "gpuorch.controlPlaneAffinity" . | nindent 6 }}
       containers:
         - name: grafana
           image: {{ $g.image }}

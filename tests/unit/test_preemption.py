@@ -258,6 +258,18 @@ def test_throttle_agent_failure_counts_nothing(cluster, clock, agent):
     assert not ctl.throttled and not ctl.decisions
 
 
+def test_ignores_pods_of_other_schedulers(cluster, clock, agent):
+    """Baseline isolation: default-scheduler pods keep native k8s behaviour (no throttle, no evict)."""
+    cluster.add_node(gpu_node("w0", slots=1, util=100, ts=clock(), pods={"ub": PodSummary(util=70)}))
+    cluster.add_pod(gpu_pod("batch", node="w0", uid="ub", ours=False))
+    cluster.add_pod(gpu_pod("crit", "gpu-critical", node="w0", uid="uc", ours=False))
+    cluster.add_pod(gpu_pod("crit2", "gpu-critical", uid="uc2", ours=False,
+                            annotations={C.ANN_PREEMPTION_REQUESTED: "{}"}))
+    ctl = PreemptionController(cluster, agent, clock=clock)
+    ctl.run_once()
+    assert not agent.calls and not cluster.deleted and not ctl.decisions
+
+
 def test_guardrail_stops_thrashing(cluster, clock, agent):
     cfg = ControllerConfig(max_preemptions=2, window_s=1000)
     cluster.add_node(gpu_node("w0", slots=1, ts=clock()))

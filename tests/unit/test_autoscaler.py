@@ -18,6 +18,9 @@ def test_scale_up_down_cost_and_kwok_reaper(cluster, clock):
     asim.run_once()
     sim = [n for n in cluster.nodes.values() if n.simulated]
     assert len(sim) == 1 and sim[0].alloc_gpu == 4 and sim[0].taints[0].key == "kwok.x-k8s.io/node"
+    # GPU state is published at creation, so the scheduler never sees the new node as "unknown"
+    born = NodeGpuSummary.from_annotation(sim[0].annotations[C.ANN_NODE_STATE])
+    assert born.mem_total_mb == 16384 and born.ts == clock()
     clock.advance(10)
     asim.run_once()
     assert len([n for n in cluster.nodes.values() if n.simulated]) == 1  # max_sim_nodes

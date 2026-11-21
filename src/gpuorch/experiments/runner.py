@@ -71,8 +71,9 @@ def run_sim(trace: dict, out: Path, reps: int, schedulers: list[str], cfg_kwargs
             s["wallclock_s"] = round(time.time() - t0, 2)
             write_run(out / sched / f"rep{rep}", res, s)
             sums.append(s)
-            print(f"  [{sched} rep{rep}] critical p95={s['latency_ms']['gpu-critical']['p95']}ms "
-                  f"util={s['gpu_util_mean_pct']}% preemptions={s['preemption_count']} ooms={s['oom_failures']}")
+            print(f"  [simulation] [{sched} rep{rep}] critical p95={s['latency_ms']['gpu-critical']['p95']}ms "
+                  f"util={s['gpu_util_mean_pct']}% preemptions={s['preemption_count']} "
+                  f"crashed_jobs={s['crashed_jobs']} crash_events={s['crash_events']}")
         comparison[sched] = aggregate(sums)
     return comparison
 
@@ -123,7 +124,7 @@ def job_manifest(job: dict, scheduler: str, namespace: str, image: str, time_sca
 
 def run_kind(trace: dict, out: Path, schedulers: list[str], image: str, time_scale: float, timeout_s: float,
              run_id: str, prom_url: str | None) -> dict:  # pragma: no cover - needs a live cluster
-    """TODO(verify-on-kind): `make cluster-up deploy experiment-kind TRACE=traces/mixed-small.yaml`."""
+    """Replay the trace on a live kind cluster (simulated GPUs: mock agents + KWOK nodes)."""
     from kubernetes import client
 
     from gpuorch.common.k8s import load_kube_config
@@ -132,36 +133,89 @@ def run_kind(trace: dict, out: Path, schedulers: list[str], image: str, time_sca
     v1, batch = client.CoreV1Api(), client.BatchV1Api()
     comparison = {}
     for sched in schedulers:
+        _reset_cluster(v1)  # both schedulers start from the same state (no leftover pods / KWOK nodes)
         ns = f"exp-{run_id}-{sched}"[:63]
         v1.create_namespace({"metadata": {"name": ns}})
         t0 = time.time()
+        # Checkpoints live on a shared hostPath; a per-run token keeps a re-run with the same --run-id from
+        # "resuming" the previous run's checkpoints (which made every job finish instantly).
+        ckpt_run = f"{run_id}-{int(t0)}"
         pending = sorted(trace["jobs"], key=lambda j: j["arrival_s"])
         submitted: dict[str, dict] = {}
         util: list[tuple[float, str, float]] = []
+        oversub = {"samples": 0, "oversubscribed": 0, "max_overcommit_mb": 0}
+        gpu_node_seconds = 0.0
+        last = t0
+        print(f"  [kind] {sched}: replaying {len(pending)} jobs (time-scale {time_scale})", flush=True)
         while time.time() - t0 < timeout_s:
             now = time.time() - t0
             while pending and pending[0]["arrival_s"] * time_scale <= now:
                 job = pending.pop(0)
-                m = job_manifest(job, sched, ns, image, time_scale, run_id)
+                m = job_manifest(job, sched, ns, image, time_scale, ckpt_run)
                 batch.create_namespaced_job(ns, m)
                 submitted[m["metadata"]["name"]] = {**job, "submitted_at": time.time()}
-            for n in v1.list_node().items:
+            nodes = v1.list_node().items
+            gpu_nodes = [n for n in nodes if int((n.status.allocatable or {}).get(C.GPU_RESOURCE, "0")) > 0]
+            gpu_node_seconds += (time.time() - last) * len(gpu_nodes)
+            last = time.time()
+            totals = {}
+            for n in gpu_nodes:
                 st = (n.metadata.annotations or {}).get(C.ANN_NODE_STATE)
                 if st:
-                    util.append((round(now, 1), n.metadata.name, json.loads(st).get("util", 0)))
+                    data = json.loads(st)
+                    util.append((round(now, 1), n.metadata.name, data.get("util", 0)))
+                    totals[n.metadata.name] = data.get("mem_total_mb", 0)
+            # GPU-memory exposure: requested gpu-mem-mb of running pods vs. the node's GPU memory
+            used: dict[str, int] = {}
+            for p in v1.list_namespaced_pod(ns, field_selector="status.phase=Running").items:
+                mb = int(float((p.metadata.annotations or {}).get(C.ANN_GPU_MEM_MB, "0")))
+                used[p.spec.node_name] = used.get(p.spec.node_name, 0) + mb
+            for node, total in totals.items():
+                oversub["samples"] += 1
+                over = used.get(node, 0) + 300 - total
+                if total and over > 0:
+                    oversub["oversubscribed"] += 1
+                    oversub["max_overcommit_mb"] = max(oversub["max_overcommit_mb"], over)
             jobs = batch.list_namespaced_job(ns).items
-            if not pending and jobs and all((j.status.succeeded or 0) >= 1 for j in jobs):
+            done = sum(1 for j in jobs if (j.status.succeeded or 0) >= 1)
+            if int(now) % 30 < 2:
+                print(f"    t={now:5.0f}s submitted={len(submitted)} done={done}", flush=True)
+            if not pending and jobs and done == len(jobs):
                 break
             time.sleep(2)
-        res = _collect_kind(v1, batch, ns, submitted, util, time.time() - t0, prom_url)
+        job_created = {j.metadata.name: j.metadata.creation_timestamp.timestamp()
+                       for j in batch.list_namespaced_job(ns).items}
+        res = _collect_kind(v1, ns, submitted, util, time.time() - t0, gpu_node_seconds, prom_url, job_created)
         s = summarize(res)
+        s["gpu_mem_oversubscribed_pct"] = round(100 * oversub["oversubscribed"] / max(1, oversub["samples"]), 2)
+        s["gpu_mem_max_overcommit_mb"] = oversub["max_overcommit_mb"]
+        s["note"] = ("kind: fake workloads do not allocate real GPU memory, so oversubscription cannot crash pods "
+                     "here; gpu_mem_oversubscribed_pct measures how often it *would* have. Inference latency is "
+                     "not measured with fake workloads (needs real inference + load generator, M6).")
         write_run(out / sched / "rep0", res, s)
         comparison[sched] = s
         v1.delete_namespace(ns)
+    _reset_cluster(v1)
     return comparison
 
 
-def _collect_kind(v1, batch, ns, submitted, util, elapsed, prom_url):  # pragma: no cover - needs a live cluster
+def _reset_cluster(v1) -> None:  # pragma: no cover - needs a live cluster
+    """Wait for old experiment namespaces to disappear and remove leftover simulated (KWOK) nodes."""
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        left = [n.metadata.name for n in v1.list_namespace().items if n.metadata.name.startswith("exp-")]
+        if not left:
+            break
+        for name in left:
+            if not v1.read_namespace(name).metadata.deletion_timestamp:
+                v1.delete_namespace(name)
+        time.sleep(3)
+    for n in v1.list_node(label_selector=f"{C.LABEL_SIMULATED}=true").items:
+        v1.delete_node(n.metadata.name)
+
+
+def _collect_kind(v1, ns, submitted, util, elapsed, gpu_node_seconds, prom_url,
+                  job_created: dict[str, float]):  # pragma: no cover
     rows = []
     pods = v1.list_namespaced_pod(ns).items
     events = v1.list_namespaced_event(ns).items
@@ -173,28 +227,34 @@ def _collect_kind(v1, batch, ns, submitted, util, elapsed, prom_url):  # pragma:
         jp = by_job.get(name, [])
         starts = [p.status.start_time.timestamp() for p in jp if p.status and p.status.start_time]
         first = min(starts) if starts else None
+        # Queueing delay uses cluster-side timestamps only (Job creation -> first pod start). Mixing the local
+        # clock with server timestamps gave negative delays (clock skew + 1 s timestamp truncation).
+        created = job_created.get(name)
         restarts = max(0, len(jp) - 1)
+        # crash = pod that failed on its own (exit != 0). Evicted pods are deleted, so they never show up here.
+        crashes = sum(1 for p in jp if p.status and p.status.phase == "Failed" and not p.metadata.deletion_timestamp)
         rows.append({
             "job": name, "type": job["type"], "priority_class": job["priority_class"],
             "arrival_s": job["arrival_s"], "first_start_s": first,
-            "queue_delay_s": (first - job["submitted_at"]) if first else elapsed,
+            "queue_delay_s": max(0.0, first - created) if (first and created) else elapsed,
             "started": first is not None, "completed": any(p.status.phase == "Succeeded" for p in jp),
             "done_at_s": None, "duration_s": job["duration_s"], "restarts": restarts,
-            "evictions": preempted.get(name, 0), "ooms": 0, "lost_work_s": 0.0, "throttled_s": 0,
+            "evictions": preempted.get(name, 0), "ooms": crashes, "lost_work_s": 0.0, "throttled_s": 0,
             "requests": 0, "slo_ms": job.get("slo_ms"), "slo_violations": 0, "unavailable_requests": 0,
             "p50_ms": None, "p95_ms": None, "p99_ms": None, "preemption_wait_s": None, "_latencies": [],
         })
-    pre = {}
+    pre: dict[tuple[str, str], int] = {}
     for e in events:
-        if e.reason == "GpuPreempted":
-            policy = "throttle" if e.message.startswith("throttle") else "evict"
-            pre[(policy, "?")] = pre.get((policy, "?"), 0) + 1
-        elif e.reason == "Preempted":  # kube-scheduler native preemption
-            pre[("evict", "?")] = pre.get(("evict", "?"), 0) + 1
+        if e.reason not in ("GpuPreempted", "Preempted"):  # Preempted = kube-scheduler native preemption
+            continue
+        policy = "throttle" if e.reason == "GpuPreempted" and e.message.startswith("throttle") else "evict"
+        victim_job = submitted.get(e.involved_object.name.rsplit("-", 1)[0], {})
+        key = (policy, victim_job.get("priority_class", "?"))
+        pre[key] = pre.get(key, 0) + 1
     if prom_url:
         _enrich_from_prometheus(rows, prom_url)
-    return {"policy": ns, "end_s": elapsed, "rows": rows, "util": util, "node_seconds": elapsed * sum(1 for n in v1.list_node().items if int((n.status.allocatable or {}).get(C.GPU_RESOURCE, "0")) > 0),
-            "preemptions": pre, "price_per_hour": 0.35}
+    return {"policy": ns.rsplit("-", 1)[-1], "label": "kind (simulated GPUs)", "end_s": elapsed, "rows": rows,
+            "util": util, "node_seconds": gpu_node_seconds, "preemptions": pre, "price_per_hour": 0.35}
 
 
 def _preempted_by_job(events) -> dict[str, int]:  # pragma: no cover
@@ -251,7 +311,12 @@ def main(argv: list[str] | None = None) -> None:
         comparison = run_sim(trace, out, a.reps, scheds, {"nodes": a.nodes, "slots": a.slots, "autoscale": a.autoscale})
     else:
         comparison = run_kind(trace, out, scheds, a.image, a.time_scale, a.timeout, run_id, a.prom_url)
-    meta = {"run_id": run_id, "trace": a.trace, "mode": a.mode, "reps": a.reps, "nodes": a.nodes, "slots": a.slots}
+    meta = {"run_id": run_id, "trace": a.trace, "mode": a.mode, "reps": a.reps,
+            "label": "simulation" if a.mode == "sim" else "kind (simulated GPUs)"}
+    if a.mode == "sim":
+        meta.update(nodes=a.nodes, slots=a.slots)
+    else:
+        meta.update(time_scale=a.time_scale)
     (out / "comparison.json").write_text(json.dumps({"meta": meta, "results": comparison}, indent=2))
     print(f"wrote {out / 'comparison.json'}")
     if not a.no_charts:

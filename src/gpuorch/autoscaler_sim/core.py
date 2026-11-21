@@ -76,6 +76,11 @@ class AutoscalerSim:
         labels = {C.LABEL_SIMULATED: "true", "type": "kwok", "kubernetes.io/role": "agent",
                   "kubernetes.io/hostname": f"{self.cfg.node_prefix}-{self._seq}"}
         annotations = {"kwok.x-k8s.io/node": "fake", "node.alpha.kubernetes.io/ttl": "0"} if self.cfg.kwok else {}
+        # Publish GPU state at creation: otherwise the scheduler sees "unknown" for up to one autoscaler cycle
+        # and (correctly, per the stale-state rule) places by slot count only, which can oversubscribe memory.
+        annotations[C.ANN_NODE_STATE] = NodeGpuSummary(
+            ts=self.clock(), gpus=1, mem_total_mb=self.cfg.gpu_mem_mb, mem_used_mb=300, util=0.0
+        ).to_annotation()
         taints = [Taint("kwok.x-k8s.io/node", "fake", "NoSchedule")] if self.cfg.kwok else []
         return NodeInfo(
             name=f"{self.cfg.node_prefix}-{int(self.clock())}-{self._seq}",

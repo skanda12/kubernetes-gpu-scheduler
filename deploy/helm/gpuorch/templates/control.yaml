@@ -33,7 +33,7 @@ spec:
     spec:
       serviceAccountName: gpu-scheduler
       priorityClassName: system-cluster-critical
-      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      {{- include "gpuorch.controlPlaneAffinity" . | nindent 6 }}
       containers:
         - name: scheduler
           image: {{ include "gpuorch.image" . }}
@@ -70,7 +70,7 @@ spec:
     spec:
       serviceAccountName: preemption-controller
       priorityClassName: system-cluster-critical
-      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      {{- include "gpuorch.controlPlaneAffinity" . | nindent 6 }}
       containers:
         - name: controller
           image: {{ include "gpuorch.image" . }}
@@ -78,6 +78,7 @@ spec:
           args: ["gpuorch.preemption.main"]
           env:
             - {name: CONTROLLER_INTERVAL_S, value: "{{ $p.intervalS }}"}
+            - {name: SCHEDULER_NAME, value: {{ $s.name }}}
             - {name: SATURATION_UTIL, value: "{{ $p.saturationUtil }}"}
             - {name: TARGET_UTIL, value: "{{ $p.targetUtil }}"}
             - {name: UNTHROTTLE_UTIL, value: "{{ $p.unthrottleUtil }}"}
@@ -110,7 +111,7 @@ spec:
       annotations: {{- include "gpuorch.promAnnotations" $as.metricsPort | nindent 8 }}
     spec:
       serviceAccountName: autoscaler-sim
-      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      {{- include "gpuorch.controlPlaneAffinity" . | nindent 6 }}
       containers:
         - name: autoscaler
           image: {{ include "gpuorch.image" . }}

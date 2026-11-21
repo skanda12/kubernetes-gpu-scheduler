@@ -29,6 +29,9 @@ class ControllerConfig:
     evict_grace_s: int = 10
     inflight_timeout_s: float = 60.0
     stale_after_s: float = 15.0
+    # Only pods placed by our scheduler may trigger preemption; pods of other schedulers (e.g. the default
+    # kube-scheduler baseline) keep native Kubernetes behaviour only.
+    scheduler_name: str = C.SCHEDULER_NAME
 
     @classmethod
     def from_env(cls) -> ControllerConfig:
@@ -45,6 +48,7 @@ class ControllerConfig:
             evict_grace_s=C.env_int("EVICT_GRACE_S", 10),
             inflight_timeout_s=C.env_float("INFLIGHT_TIMEOUT_S", 60),
             stale_after_s=C.env_float("STALE_AFTER_S", 15),
+            scheduler_name=C.env_str("SCHEDULER_NAME", C.SCHEDULER_NAME),
         )
 
 
@@ -122,6 +126,7 @@ class PreemptionController:
             p for p in pods
             if p.annotations.get(C.ANN_PREEMPTION_REQUESTED) and p.node_name is None and not p.deleting
             and is_latency_critical(p.priority) and p.uid not in self.inflight
+            and p.scheduler_name == self.cfg.scheduler_name
         ]
         for pod in sorted(waiting, key=lambda p: (-p.priority, p.created)):
             decision = decide_pending(pod, views, self.guard, now)
@@ -142,6 +147,7 @@ class PreemptionController:
             preemptors = [
                 p for p in view.pods
                 if is_latency_critical(p.priority) and p.gpu > 0 and p.phase == "Running" and p.uid not in frozen
+                and p.scheduler_name == self.cfg.scheduler_name
             ]
             if not preemptors:
                 continue

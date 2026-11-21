@@ -113,6 +113,9 @@ def install_kwok() -> None:
     base = f"https://github.com/kubernetes-sigs/kwok/releases/download/{KWOK_VERSION}"
     run(["kubectl", "apply", "-f", f"{base}/kwok.yaml"])
     run(["kubectl", "apply", "-f", f"{base}/stage-fast.yaml"])
+    # stage-fast's `pod-complete` marks Job pods Succeeded the moment they run. Remove it: autoscaler-sim
+    # completes pods on KWOK nodes after their real gpuorch.io/duration-s instead.
+    run(["kubectl", "delete", "stage", "pod-complete", "--ignore-not-found"])
 
 
 def images(gpu: bool = False) -> None:

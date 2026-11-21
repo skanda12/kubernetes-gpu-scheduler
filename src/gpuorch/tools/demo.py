@@ -36,6 +36,7 @@ def demo_trace() -> dict:
 def offline() -> None:
     from gpuorch.experiments.simulator import SimConfig, Simulation, summarize
 
+    print("=== SIMULATION (offline simulator, not a real cluster) ===")
     print("=== offline demo: 12 gpu-batch jobs fill 3 GPUs (4 slots each); gpu-critical arrives at t=60s ===\n")
     for policy in ("gpuorch", "default"):
         sim = Simulation(demo_trace(), policy, SimConfig(seed=1))
@@ -51,7 +52,7 @@ def offline() -> None:
         print(f"  critical: arrival->running {crit['queue_delay_s']:.1f}s, p95 {crit['p95_ms']} ms, "
               f"p99 {crit['p99_ms']} ms (SLO 50 ms)")
         print(f"  preemptions: {s['preemptions']}  training work lost: {s['training_lost_work_s']}s  "
-              f"OOM failures: {s['oom_failures']}  makespan: {s['makespan_s']:.0f}s\n")
+              f"crashed jobs: {s['crashed_jobs']} (crash events: {s['crash_events']})  makespan: {s['makespan_s']:.0f}s\n")
 
 
 def kind(skip_setup: bool, timeout: float) -> None:  # pragma: no cover - needs a live cluster

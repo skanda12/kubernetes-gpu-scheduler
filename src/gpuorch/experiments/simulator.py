@@ -344,7 +344,7 @@ def _pct(sorted_vals: list[float], q: float) -> float | None:
 
 def summarize(res: dict) -> dict:
     rows = res["rows"]
-    out: dict = {"policy": res["policy"], "makespan_s": res["end_s"]}
+    out: dict = {"policy": res["policy"], "label": res.get("label", "simulation"), "makespan_s": res["end_s"]}
     by_pc: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
         by_pc[r["priority_class"]].append(r)
@@ -368,7 +368,10 @@ def summarize(res: dict) -> dict:
     waits = [r["preemption_wait_s"] for r in rows if r["preemption_wait_s"] is not None]
     out["preemption_decision_to_running_s"] = round(sum(waits) / len(waits), 2) if waits else None
     out["training_lost_work_s"] = round(sum(r["lost_work_s"] for r in train), 1)
-    out["oom_failures"] = sum(r["ooms"] for r in rows)
+    # crash_events counts every pod crash (a job can crash, restart, and crash again);
+    # crashed_jobs counts distinct jobs that crashed at least once.
+    out["crash_events"] = sum(r["ooms"] for r in rows)
+    out["crashed_jobs"] = sum(1 for r in rows if r["ooms"] > 0)
     hours = res["end_s"] / 3600 or 1
     done_work = sum(r["duration_s"] for r in train if r["completed"])
     out["training_work_s_per_hour"] = round(done_work / hours, 1)

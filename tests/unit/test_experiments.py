@@ -62,7 +62,9 @@ def test_gpuorch_beats_default_on_critical_latency_and_ooms():
     trace = generate(30, 0.12, 3)
     ours = summarize(Simulation(trace, "gpuorch", SimConfig(seed=2)).run())
     base = summarize(Simulation(trace, "default", SimConfig(seed=2)).run())
-    assert ours["oom_failures"] == 0
+    assert ours["crash_events"] == 0 and ours["crashed_jobs"] == 0
+    assert base["crashed_jobs"] <= base["crash_events"]
+    assert ours["label"] == "simulation"
     assert ours["latency_ms"]["gpu-critical"]["p95"] <= base["latency_ms"]["gpu-critical"]["p95"]
 
 
@@ -102,6 +104,8 @@ def test_job_manifest():
     assert spec["containers"][0]["resources"]["limits"][C.GPU_RESOURCE] == "1"
     assert m["spec"]["template"]["metadata"]["annotations"][C.ANN_GPU_MEM_MB] == str(job["gpu_mem_mb"])
     assert "schedulerName" not in runner.job_manifest(job, "default", "ns", "img", 1, "r")["spec"]["template"]["spec"]
+    env = {e["name"]: e["value"] for e in spec["containers"][0]["env"]}
+    assert env["CHECKPOINT_DIR"] == f"/ckpt/run/gpuorch/{job['name']}"  # run token isolates checkpoints
 
 
 def test_offline_demo_runs(capsys):
