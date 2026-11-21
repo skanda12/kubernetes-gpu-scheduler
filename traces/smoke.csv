@@ -1,0 +1,13 @@
+name,arrival_s,kind,type,priority_class,duration_s,gpu_mem_mb,gpu_util,slo_ms,base_latency_ms,rps,checkpoint_every_s
+j000-batch,0.72,batch,batch,gpu-batch,395.0,3000,69.8,,,,60
+j001-batch,3.71,batch,batch,gpu-batch,403.9,2300,51.1,,,,60
+j002-training-normal,12.74,training-normal,training,gpu-normal,355.8,3000,63.4,,,,30
+j003-inference-high,19.13,inference-high,inference,gpu-high,231.8,3700,20.5,120,40,10,
+j004-training-normal,19.26,training-normal,training,gpu-normal,403.6,4100,56.5,,,,30
+j005-inference-critical,22.0,inference-critical,inference,gpu-critical,123.3,2100,32.4,50,18,20,
+j006-inference-high,23.33,inference-high,inference,gpu-high,122.8,2600,24.3,120,40,10,
+j007-batch,23.44,batch,batch,gpu-batch,320.3,4500,57.4,,,,60
+j008-batch,47.93,batch,batch,gpu-batch,163.5,3300,78.9,,,,60
+j009-batch,54.14,batch,batch,gpu-batch,272.0,5300,76.8,,,,60
+j010-training-normal,55.95,training-normal,training,gpu-normal,388.3,5500,65.2,,,,30
+j011-inference-critical,60.39,inference-critical,inference,gpu-critical,126.4,2600,31.2,50,18,20,

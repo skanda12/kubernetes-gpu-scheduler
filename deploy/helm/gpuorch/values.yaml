@@ -1,0 +1,87 @@
+image:
+  repository: gpuorch/gpuorch
+  tag: dev
+  pullPolicy: IfNotPresent
+  # image used by the real-GPU agent (has nvidia-ml-py)
+  gpuTag: dev-gpu
+
+logLevel: INFO
+
+priorityClasses:
+  create: true
+  classes:
+    - {name: gpu-critical, value: 1000000, description: "latency-critical inference (never preempted)"}
+    - {name: gpu-high, value: 100000, description: "interactive / important inference"}
+    - {name: gpu-normal, value: 10000, description: "regular training"}
+    - {name: gpu-batch, value: 1000, description: "best-effort batch training"}
+
+agent:
+  enabled: true
+  port: 9400
+  intervalS: 2
+  annotateIntervalS: 3
+  # Mock agents: kind / simulated workers (nodes NOT labelled gpuorch.io/real-gpu=true)
+  mock:
+    scenario: /etc/gpuorch/scenarios/kind-default.yaml
+    nodeSelector: {gpuorch.io/gpu-node: "true"}
+  # Real agents: WSL2 / Linux GPU nodes labelled gpuorch.io/real-gpu=true (M5)
+  real:
+    enabled: false
+    runtimeClassName: nvidia
+    cgroupRoot: /sys/fs/cgroup
+
+scheduler:
+  enabled: true
+  name: priority-gpu-scheduler
+  intervalS: 1
+  staleAfterS: 15
+  metricsPort: 9401
+  weights:
+    spread: 1.0
+    free_gpu_mem: 0.5
+    binpack: 1.0
+    critical_penalty: 0.8
+    nominated: 2.0
+    stale_util: 100.0
+
+preemption:
+  enabled: true
+  metricsPort: 9402
+  intervalS: 1
+  saturationUtil: 90
+  targetUtil: 70
+  unthrottleUtil: 60
+  cooldownS: 20
+  maxPreemptions: 3
+  windowS: 600
+  evictGraceS: 10
+  inflightTimeoutS: 60
+
+autoscalerSim:
+  enabled: true
+  metricsPort: 9403
+  intervalS: 5
+  scaleUpAfterS: 30
+  scaleDownAfterS: 120
+  maxSimNodes: 3
+  nodePricePerHour: 0.35
+  gpusPerNode: 4
+  gpuMemMb: 16384
+
+prometheus:
+  enabled: true
+  image: prom/prometheus:v2.53.0
+  retention: 2d
+  nodePort: 30090
+
+grafana:
+  enabled: true
+  image: grafana/grafana:11.1.0
+  nodePort: 30030
+  adminPassword: gpuorch  # local demo only
+  # dashboards ConfigMap is created from deploy/grafana/*.json by `python -m gpuorch.tools.cluster deploy`
+  dashboardsConfigMap: gpuorch-grafana-dashboards
+
+dcgmExporter:
+  enabled: false  # native Linux GPU nodes only (not WSL2)
+  image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.6-3.4.2-ubuntu22.04

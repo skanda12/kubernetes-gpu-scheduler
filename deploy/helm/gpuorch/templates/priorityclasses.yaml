@@ -1,0 +1,14 @@
+{{- if .Values.priorityClasses.create }}
+{{- range .Values.priorityClasses.classes }}
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .name }}
+  labels: {{- include "gpuorch.labels" $ | nindent 4 }}
+value: {{ .value }}
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: {{ .description | quote }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,71 @@
+{{- if .Values.agent.enabled }}
+{{- $a := .Values.agent }}
+{{- range $mode := list "mock" "real" }}
+{{- if or (eq $mode "mock") $a.real.enabled }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-agent-{{ $mode }}
+  namespace: {{ $.Release.Namespace }}
+  labels: {{- include "gpuorch.labels" $ | nindent 4 }}
+    app: gpu-agent
+spec:
+  selector: {matchLabels: {app: gpu-agent, mode: {{ $mode }}}}
+  template:
+    metadata:
+      labels: {app: gpu-agent, mode: {{ $mode }}}
+      annotations: {{- include "gpuorch.promAnnotations" $a.port | nindent 8 }}
+    spec:
+      serviceAccountName: gpu-agent
+      {{- if eq $mode "mock" }}
+      nodeSelector: {{- toYaml $a.mock.nodeSelector | nindent 8 }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: gpuorch.io/real-gpu, operator: NotIn, values: ["true"]}
+                  - {key: type, operator: NotIn, values: ["kwok"]}
+      {{- else }}
+      nodeSelector: {gpuorch.io/real-gpu: "true"}
+      runtimeClassName: {{ $a.real.runtimeClassName }}
+      hostPID: true
+      {{- end }}
+      priorityClassName: system-node-critical
+      containers:
+        - name: agent
+          image: {{ $.Values.image.repository }}:{{ if eq $mode "real" }}{{ $.Values.image.gpuTag }}{{ else }}{{ $.Values.image.tag }}{{ end }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args: ["gpuorch.agent.main"]
+          ports: [{containerPort: {{ $a.port }}, name: http}]
+          env:
+            - {name: NODE_NAME, valueFrom: {fieldRef: {fieldPath: spec.nodeName}}}
+            - {name: POD_IP, valueFrom: {fieldRef: {fieldPath: status.podIP}}}
+            - {name: AGENT_PORT, value: "{{ $a.port }}"}
+            - {name: AGENT_INTERVAL_S, value: "{{ $a.intervalS }}"}
+            - {name: ANNOTATE_INTERVAL_S, value: "{{ $a.annotateIntervalS }}"}
+            - {name: LOG_LEVEL, value: {{ $.Values.logLevel }}}
+            {{- if eq $mode "mock" }}
+            - {name: GPU_BACKEND, value: mock}
+            - {name: ENFORCER, value: noop}
+            - {name: MOCK_SCENARIO, value: {{ $a.mock.scenario }}}
+            {{- else }}
+            - {name: GPU_BACKEND, value: nvml}
+            - {name: ENFORCER, value: cgroup}
+            - {name: CGROUP_ROOT, value: /host/cgroup}
+            - {name: NVIDIA_VISIBLE_DEVICES, value: all}
+            - {name: NVIDIA_DRIVER_CAPABILITIES, value: utility}
+            {{- end }}
+          readinessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 5}
+          resources: {requests: {cpu: 20m, memory: 64Mi}, limits: {memory: 256Mi}}
+          {{- if eq $mode "real" }}
+          securityContext: {privileged: true, runAsUser: 0}
+          volumeMounts: [{name: cgroup, mountPath: /host/cgroup}]
+          {{- end }}
+      {{- if eq $mode "real" }}
+      volumes: [{name: cgroup, hostPath: {path: {{ $a.real.cgroupRoot }}, type: Directory}}]
+      {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

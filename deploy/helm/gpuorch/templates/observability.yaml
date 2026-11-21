@@ -1,0 +1,146 @@
+{{- $pr := .Values.prometheus }}
+{{- $g := .Values.grafana }}
+{{- if $pr.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpuorch.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global: {scrape_interval: 5s, evaluation_interval: 5s}
+    scrape_configs:
+      # every pod annotated prometheus.io/scrape=true (agents, scheduler, controller, autoscaler, workloads)
+      - job_name: pods
+        kubernetes_sd_configs: [{role: pod}]
+        relabel_configs:
+          - {source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape], action: keep, regex: "true"}
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: '([^:]+)(?::\d+)?;(\d+)'
+            replacement: '$1:$2'
+            target_label: __address__
+          - {source_labels: [__meta_kubernetes_namespace], target_label: namespace}
+          - {source_labels: [__meta_kubernetes_pod_name], target_label: k8s_pod}
+          - {source_labels: [__meta_kubernetes_pod_label_app], target_label: app}
+          - {source_labels: [__meta_kubernetes_pod_label_gpuorch_io_job], target_label: job_name}
+          - {source_labels: [__meta_kubernetes_pod_label_gpuorch_io_priority], target_label: priority_class}
+          - {source_labels: [__meta_kubernetes_pod_node_name], target_label: k8s_node}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpuorch.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: prometheus}}
+  template:
+    metadata:
+      labels: {app: prometheus}
+      annotations: {checksum/config: {{ .Values.prometheus | toYaml | sha256sum }}}
+    spec:
+      serviceAccountName: prometheus
+      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      containers:
+        - name: prometheus
+          image: {{ $pr.image }}
+          args: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time={{ $pr.retention }}",
+                 "--storage.tsdb.path=/prometheus", "--web.enable-lifecycle"]
+          ports: [{containerPort: 9090, name: web}]
+          volumeMounts: [{name: config, mountPath: /etc/prometheus}, {name: data, mountPath: /prometheus}]
+          resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 1Gi}}
+      volumes: [{name: config, configMap: {name: prometheus-config}}, {name: data, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: NodePort
+  selector: {app: prometheus}
+  ports: [{port: 9090, targetPort: 9090, nodePort: {{ $pr.nodePort }}}]
+{{- end }}
+{{- if $g.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: {{ .Release.Namespace }}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - {name: Prometheus, uid: prometheus, type: prometheus, access: proxy, url: "http://prometheus:9090", isDefault: true}
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - {name: gpuorch, folder: gpuorch, type: file, options: {path: /var/lib/grafana/dashboards}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: grafana}}
+  template:
+    metadata: {labels: {app: grafana}}
+    spec:
+      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      containers:
+        - name: grafana
+          image: {{ $g.image }}
+          env:
+            - {name: GF_SECURITY_ADMIN_PASSWORD, value: {{ $g.adminPassword | quote }}}
+            - {name: GF_AUTH_ANONYMOUS_ENABLED, value: "true"}
+            - {name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: Viewer}
+          ports: [{containerPort: 3000, name: web}]
+          volumeMounts:
+            - {name: datasources, mountPath: /etc/grafana/provisioning/datasources/datasources.yaml, subPath: datasources.yaml}
+            - {name: datasources, mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml, subPath: dashboards.yaml}
+            - {name: dashboards, mountPath: /var/lib/grafana/dashboards}
+          resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 512Mi}}
+      volumes:
+        - {name: datasources, configMap: {name: grafana-provisioning}}
+        - {name: dashboards, configMap: {name: {{ $g.dashboardsConfigMap }}, optional: true}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: NodePort
+  selector: {app: grafana}
+  ports: [{port: 3000, targetPort: 3000, nodePort: {{ $g.nodePort }}}]
+{{- end }}
+{{- if .Values.dcgmExporter.enabled }}
+---
+# Optional, native Linux GPU nodes only (DCGM does not work under WSL2).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dcgm-exporter
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector: {matchLabels: {app: dcgm-exporter}}
+  template:
+    metadata:
+      labels: {app: dcgm-exporter}
+      annotations: {{- include "gpuorch.promAnnotations" 9400 | nindent 8 }}
+    spec:
+      nodeSelector: {gpuorch.io/real-gpu: "true", gpuorch.io/native-linux: "true"}
+      runtimeClassName: nvidia
+      containers:
+        - name: dcgm-exporter
+          image: {{ .Values.dcgmExporter.image }}
+          ports: [{containerPort: 9400, name: metrics}]
+          securityContext: {capabilities: {add: ["SYS_ADMIN"]}}
+{{- end }}

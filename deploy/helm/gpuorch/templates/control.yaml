@@ -1,0 +1,131 @@
+{{- /* gpu-scheduler, preemption-controller, autoscaler-sim: single-replica Deployments */ -}}
+{{- $s := .Values.scheduler }}
+{{- $p := .Values.preemption }}
+{{- $as := .Values.autoscalerSim }}
+{{- if $s.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-scheduler-config
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpuorch.labels" . | nindent 4 }}
+data:
+  scheduler.yaml: |
+    weights: {{- toYaml $s.weights | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-scheduler
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpuorch.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: gpu-scheduler}}
+  template:
+    metadata:
+      labels: {app: gpu-scheduler}
+      annotations:
+        {{- include "gpuorch.promAnnotations" $s.metricsPort | nindent 8 }}
+        checksum/config: {{ toYaml $s.weights | sha256sum }}
+    spec:
+      serviceAccountName: gpu-scheduler
+      priorityClassName: system-cluster-critical
+      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      containers:
+        - name: scheduler
+          image: {{ include "gpuorch.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["gpuorch.scheduler.main"]
+          env:
+            - {name: SCHEDULER_NAME, value: {{ $s.name }}}
+            - {name: SCHEDULER_INTERVAL_S, value: "{{ $s.intervalS }}"}
+            - {name: STALE_AFTER_S, value: "{{ $s.staleAfterS }}"}
+            - {name: SCHEDULER_CONFIG, value: /etc/gpuorch/config/scheduler.yaml}
+            - {name: METRICS_PORT, value: "{{ $s.metricsPort }}"}
+            - {name: LOG_LEVEL, value: {{ .Values.logLevel }}}
+          ports: [{containerPort: {{ $s.metricsPort }}, name: metrics}]
+          volumeMounts: [{name: config, mountPath: /etc/gpuorch/config}]
+          resources: {requests: {cpu: 50m, memory: 96Mi}, limits: {memory: 256Mi}}
+      volumes: [{name: config, configMap: {name: gpu-scheduler-config}}]
+{{- end }}
+{{- if $p.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: preemption-controller
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpuorch.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: preemption-controller}}
+  template:
+    metadata:
+      labels: {app: preemption-controller}
+      annotations: {{- include "gpuorch.promAnnotations" $p.metricsPort | nindent 8 }}
+    spec:
+      serviceAccountName: preemption-controller
+      priorityClassName: system-cluster-critical
+      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      containers:
+        - name: controller
+          image: {{ include "gpuorch.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["gpuorch.preemption.main"]
+          env:
+            - {name: CONTROLLER_INTERVAL_S, value: "{{ $p.intervalS }}"}
+            - {name: SATURATION_UTIL, value: "{{ $p.saturationUtil }}"}
+            - {name: TARGET_UTIL, value: "{{ $p.targetUtil }}"}
+            - {name: UNTHROTTLE_UTIL, value: "{{ $p.unthrottleUtil }}"}
+            - {name: COOLDOWN_S, value: "{{ $p.cooldownS }}"}
+            - {name: MAX_PREEMPTIONS, value: "{{ $p.maxPreemptions }}"}
+            - {name: WINDOW_S, value: "{{ $p.windowS }}"}
+            - {name: EVICT_GRACE_S, value: "{{ $p.evictGraceS }}"}
+            - {name: INFLIGHT_TIMEOUT_S, value: "{{ $p.inflightTimeoutS }}"}
+            - {name: STALE_AFTER_S, value: "{{ $s.staleAfterS }}"}
+            - {name: METRICS_PORT, value: "{{ $p.metricsPort }}"}
+            - {name: LOG_LEVEL, value: {{ .Values.logLevel }}}
+          ports: [{containerPort: {{ $p.metricsPort }}, name: metrics}]
+          resources: {requests: {cpu: 50m, memory: 96Mi}, limits: {memory: 256Mi}}
+{{- end }}
+{{- if $as.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autoscaler-sim
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpuorch.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: autoscaler-sim}}
+  template:
+    metadata:
+      labels: {app: autoscaler-sim}
+      annotations: {{- include "gpuorch.promAnnotations" $as.metricsPort | nindent 8 }}
+    spec:
+      serviceAccountName: autoscaler-sim
+      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      containers:
+        - name: autoscaler
+          image: {{ include "gpuorch.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["gpuorch.autoscaler_sim.main"]
+          env:
+            - {name: AUTOSCALER_INTERVAL_S, value: "{{ $as.intervalS }}"}
+            - {name: SCALE_UP_AFTER_S, value: "{{ $as.scaleUpAfterS }}"}
+            - {name: SCALE_DOWN_AFTER_S, value: "{{ $as.scaleDownAfterS }}"}
+            - {name: MAX_SIM_NODES, value: "{{ $as.maxSimNodes }}"}
+            - {name: NODE_PRICE_PER_HOUR, value: "{{ $as.nodePricePerHour }}"}
+            - {name: SIM_GPUS_PER_NODE, value: "{{ $as.gpusPerNode }}"}
+            - {name: SIM_GPU_MEM_MB, value: "{{ $as.gpuMemMb }}"}
+            - {name: METRICS_PORT, value: "{{ $as.metricsPort }}"}
+            - {name: LOG_LEVEL, value: {{ .Values.logLevel }}}
+          ports: [{containerPort: {{ $as.metricsPort }}, name: metrics}]
+          resources: {requests: {cpu: 20m, memory: 64Mi}, limits: {memory: 192Mi}}
+{{- end }}

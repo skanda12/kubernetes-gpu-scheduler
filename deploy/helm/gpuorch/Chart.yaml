@@ -1,0 +1,6 @@
+apiVersion: v2
+name: gpuorch
+description: Priority-aware GPU orchestrator (agent, scheduler, preemption-controller, autoscaler-sim, observability)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

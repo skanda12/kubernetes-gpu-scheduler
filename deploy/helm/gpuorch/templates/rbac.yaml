@@ -1,0 +1,46 @@
+{{- $components := dict
+  "gpu-agent" (list
+      (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "get" "list" "watch"))
+      (dict "apiGroups" (list "") "resources" (list "nodes") "verbs" (list "get" "patch")))
+  "gpu-scheduler" (list
+      (dict "apiGroups" (list "") "resources" (list "pods" "nodes") "verbs" (list "get" "list" "watch"))
+      (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "patch"))
+      (dict "apiGroups" (list "") "resources" (list "pods/binding" "bindings") "verbs" (list "create"))
+      (dict "apiGroups" (list "" "events.k8s.io") "resources" (list "events") "verbs" (list "create" "patch")))
+  "preemption-controller" (list
+      (dict "apiGroups" (list "") "resources" (list "pods" "nodes") "verbs" (list "get" "list" "watch"))
+      (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "delete" "patch"))
+      (dict "apiGroups" (list "" "events.k8s.io") "resources" (list "events") "verbs" (list "create" "patch")))
+  "autoscaler-sim" (list
+      (dict "apiGroups" (list "") "resources" (list "pods" "nodes") "verbs" (list "get" "list" "watch"))
+      (dict "apiGroups" (list "") "resources" (list "nodes") "verbs" (list "create" "delete" "patch"))
+      (dict "apiGroups" (list "") "resources" (list "pods/status") "verbs" (list "patch"))
+      (dict "apiGroups" (list "" "events.k8s.io") "resources" (list "events") "verbs" (list "create")))
+  "prometheus" (list
+      (dict "apiGroups" (list "") "resources" (list "pods" "nodes" "services" "endpoints") "verbs" (list "get" "list" "watch")))
+-}}
+{{- range $name, $rules := $components }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels: {{- include "gpuorch.labels" $ | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpuorch-{{ $name }}
+  labels: {{- include "gpuorch.labels" $ | nindent 4 }}
+rules: {{- toYaml $rules | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpuorch-{{ $name }}
+  labels: {{- include "gpuorch.labels" $ | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: gpuorch-{{ $name }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ $name }}, namespace: {{ $.Release.Namespace }}}
+{{- end }}
