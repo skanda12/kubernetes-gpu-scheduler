@@ -64,6 +64,8 @@ class NodeGpuState(BaseModel):
                     since_ckpt=p.seconds_since_checkpoint,
                 )
                 for p in self.pods
+                # only GPU pods: keeps the node annotation small (system pods report nothing)
+                if p.gpu_mem_bytes is not None or p.gpu_util_percent is not None or p.frozen
             },
             agent_url=agent_url,
         )

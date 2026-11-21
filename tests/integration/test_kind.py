@@ -71,12 +71,15 @@ def test_m1_agents_report_scenario_state(kube):
     v1 = kube.CoreV1Api()
     pods = v1.list_namespaced_pod(NS, label_selector="app=gpu-agent").items
     assert len(pods) == 3
+    def proxy(pod, path):  # raw body: the client's deserializer mangles JSON into a repr string
+        r = v1.connect_get_namespaced_pod_proxy_with_path(f"{pod}:9400", NS, path, _preload_content=False)
+        return r.data.decode()
+
     for p in pods:
-        raw = v1.connect_get_namespaced_pod_proxy_with_path(f"{p.metadata.name}:9400", NS, "state")
-        state = json.loads(raw.replace("'", '"')) if isinstance(raw, str) else raw
+        state = json.loads(proxy(p.metadata.name, "state"))
         assert state["backend"] == "mock" and state["gpus"][0]["memory_total_bytes"] == 16384 * 1024 * 1024
-        metrics = v1.connect_get_namespaced_pod_proxy_with_path(f"{p.metadata.name}:9400", NS, "metrics")
-        assert "gpu_util_percent" in metrics
+        assert state["node"] == p.spec.node_name
+        assert 'gpu_util_percent{gpu="0",node="' in proxy(p.metadata.name, "metrics")
     nodes = v1.list_node(label_selector="gpuorch.io/gpu-node=true").items
     assert all(C.ANN_NODE_STATE in (n.metadata.annotations or {}) for n in nodes)
 
