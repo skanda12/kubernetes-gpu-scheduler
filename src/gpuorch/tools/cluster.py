@@ -85,6 +85,8 @@ def up() -> None:
     if CLUSTER not in existing:
         ckpt = (ROOT / ".data" / "ckpt").resolve()
         ckpt.mkdir(parents=True, exist_ok=True)
+        # workload pods run as uid 10001; on Linux hosts the bind mount keeps host perms, so make it writable
+        ckpt.chmod(0o777)
         cfg = (ROOT / "deploy" / "kind" / "cluster.yaml").read_text().replace("${CKPT_HOST_DIR}", ckpt.as_posix())
         cfg = cfg.replace("name: gpuorch", f"name: {CLUSTER}")
         with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:

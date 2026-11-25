@@ -38,3 +38,14 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: python -m gpuorch.tools.cluster up && python -m gpuorch.tools.cluster images && python -m gpuorch.tools.cluster deploy
       - run: pytest -q -m integration
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide
+          kubectl get events -A --sort-by=.lastTimestamp | tail -100
+          for app in gpu-scheduler preemption-controller gpu-agent; do
+            echo "=== $app ==="; kubectl -n gpuorch logs -l app=$app --tail=200 --prefix || true
+          done
+          for p in $(kubectl get pods -A --field-selector=status.phase=Failed -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {end}'); do
+            echo "=== failed pod $p ==="; kubectl -n "${p%/*}" logs "${p#*/}" --tail=50 || true
+          done
